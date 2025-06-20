@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Inventory Scanner</title>
+  <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <style>
+    body { font-family: sans-serif; padding: 10px; background: #f5f5f5; }
+    h2 { text-align: center; }
+    .btn-group { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-bottom: 10px; }
+    button, select, input { padding: 10px; font-size: 1em; border-radius: 6px; border: 1px solid #ccc; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: center; cursor: pointer; }
+    #reorderList { margin-top: 30px; }
+    #reorderList ul { list-style-type: none; padding: 0; }
+    .edit-btn { cursor: pointer; color: blue; }
+  </style>
+</head>
+<body>
+  <h2>📦 Inventory Scanner</h2>
+  <div class="btn-group">
+    <button id="usbScanBtn">🔫 Use USB Scanner</button>
+    <button id="cameraScanBtn">📷 Scan Barcode</button>
+    <button id="manualAddBtn">➕ Add Tool Manually</button>
+    <button id="toggleReorderBtn">🛒 Toggle Reorder List</button>
+    <button id="refreshReorderBtn">🔄 Refresh Reorder List</button>
+    <select id="exportSelect">
+      <option value="">Export Reorder List</option>
+      <option value="csv">Export as CSV</option>
+      <option value="pdf">Export as PDF</option>
+      <option value="email">Email CSV</option>
+    </select>
+  </div>
+
+  <table id="inventoryTable">
+    <thead>
+      <tr>
+        <th></th>
+        <th data-sort="barcode">Barcode</th>
+        <th data-sort="type">Tool Type</th>
+        <th data-sort="qty">Quantity</th>
+        <th data-sort="brand">Brand</th>
+        <th data-sort="status">Status</th>
+        <th data-sort="lastCheckin">Last Check-In</th>
+        <th data-sort="lastCheckout">Last Check-Out</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <div id="reorderList" style="display:none;">
+    <h3>Reorder List</h3>
+    <ul id="reorderItems"></ul>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      let inventory = JSON.parse(localStorage.getItem('inventory') || '{}');
+      let sortField = null;
+      let sortAsc = true;
+
+      function saveInventory() {
+        localStorage.setItem('inventory', JSON.stringify(inventory));
+      }
+
+      function updateTable() {
+        const tbody = document.querySelector('#inventoryTable tbody');
+        tbody.innerHTML = '';
+        let entries = Object.entries(inventory);
+
+        if (sortField) {
+          entries.sort((a, b) => {
+            let valA = a[1][sortField];
+            let valB = b[1][sortField];
+            if (sortField === 'qty') {
+              valA = parseInt(valA);
+              valB = parseInt(valB);
+            }
+            if (valA < valB) return sortAsc ? -1 : 1;
+            if (valA > valB) return sortAsc ? 1 : -1;
+            return 0;
+          });
+        }
+
+        entries.forEach(([barcode, item]) => {
+          const checked = item.status === 'in machine' ? 'checked' : '';
+          const row = document.createElement('tr');
+          row.innerHTML = `
+            <td><span class="edit-btn" onclick="editItem('${barcode}')">⚙️</span></td>
+            <td>${barcode}</td>
+            <td>${item.type}</td>
+            <td>${item.qty}</td>
+            <td>${item.brand || ''}</td>
+            <td><input type="checkbox" onchange="toggleStatus('${barcode}', this.checked)" ${checked}> In Machine</td>
+            <td>${item.lastCheckin || ''}</td>
+            <td>${item.lastCheckout || ''}</td>
+            <td><button onclick="checkoutItem('${barcode}')">🧺 Checkout</button></td>
+          `;
+          tbody.appendChild(row);
+        });
+      }
+
+      document.querySelectorAll('#inventoryTable th[data-sort]').forEach(th => {
+        th.addEventListener('click', () => {
+          const field = th.getAttribute('data-sort');
+          if (sortField === field) sortAsc = !sortAsc;
+          else {
+            sortField = field;
+            sortAsc = true;
+          }
+          updateTable();
+        });
+      });
+
+      window.toggleStatus = function(barcode, isChecked) {
+        inventory[barcode].status = isChecked ? 'in machine' : 'not in machine';
+        saveInventory();
+        updateTable();
+      }
+
+      window.checkoutItem = function (barcode) {
+        const item = inventory[barcode];
+        if (item && item.qty > 0 && item.status === 'in machine') {
+          item.qty--;
+          item.lastCheckout = new Date().toLocaleString();
+          saveInventory();
+          updateTable();
+        } else if (item.status !== 'in machine') {
+          alert("Tool must be marked 'In Machine' before checkout.");
+        }
+      };
+
+      window.editItem = function (barcode) {
+        const item = inventory[barcode];
+        const editChoice = prompt("Edit Options:\n1. All fields\n2. Just Quantity\nEnter 1 or 2:", "1");
+
+        if (editChoice === "2") {
+          const newQty = parseInt(prompt("Edit Quantity:", item.qty), 10);
+          if (!isNaN(newQty)) {
+            inventory[barcode].qty = newQty;
+            saveInventory();
+            updateTable();
+          }
+          return;
+        }
+
+        const newBarcode = prompt("Edit Barcode:", barcode);
+        const newType = prompt("Edit Tool Type:", item.type);
+        const newQty = parseInt(prompt("Edit Quantity:", item.qty), 10);
+        const newBrand = prompt("Edit Brand:", item.brand || '');
+        const newStatus = prompt("Edit Status:", item.status || '');
+
+        if (!newBarcode || !newType || isNaN(newQty)) return;
+
+        delete inventory[barcode];
+        inventory[newBarcode] = {
+          type: newType,
+          qty: newQty,
+          brand: newBrand,
+          status: newStatus,
+          lastCheckin: item.lastCheckin,
+          lastCheckout: item.lastCheckout
+        };
+
+        saveInventory();
+        updateTable();
+      };
+
+      function incrementOrAddTool(barcode, defaultType = 'Scanned Item') {
+        if (!inventory[barcode]) {
+          inventory[barcode] = { type: defaultType, qty: 0, brand: '', status: 'not in machine', lastCheckin: null, lastCheckout: null };
+        }
+        inventory[barcode].qty++;
+        inventory[barcode].lastCheckin = new Date().toLocaleString();
+        saveInventory();
+        updateTable();
+      }
+
+      document.getElementById('manualAddBtn').addEventListener('click', function () {
+        const barcode = prompt("Enter Barcode:");
+        if (!barcode) return;
+        if (inventory[barcode]) {
+          incrementOrAddTool(barcode);
+        } else {
+          const type = prompt("Enter Tool Type:");
+          if (!type) return;
+          const brand = prompt("Enter Brand:") || '';
+          const status = 'not in machine';
+          inventory[barcode] = { type, qty: 1, brand, status, lastCheckin: new Date().toLocaleString(), lastCheckout: null };
+          saveInventory();
+          updateTable();
+        }
+      });
+
+      document.getElementById('refreshReorderBtn').addEventListener('click', function () {
+        const list = document.getElementById('reorderItems');
+        list.innerHTML = '';
+        Object.entries(inventory).forEach(([barcode, item]) => {
+          if (item.qty <= 1) {
+            const li = document.createElement('li');
+            li.textContent = `${barcode}, ${item.qty}`;
+            list.appendChild(li);
+          }
+        });
+      });
+
+      document.getElementById('toggleReorderBtn').addEventListener('click', function () {
+        const el = document.getElementById('reorderList');
+        el.style.display = el.style.display === 'none' ? 'block' : 'none';
+      });
+
+      document.getElementById('exportSelect').addEventListener('change', function () {
+        const format = this.value;
+        const rows = [['Barcode', 'Quantity']];
+        Object.entries(inventory).forEach(([barcode, item]) => {
+          if (item.qty <= 1) {
+            rows.push([barcode, item.qty]);
+          }
+        });
+
+        if (format === 'csv') {
+          const csvContent = rows.map(r => r.join(",")).join("\r\n");
+          const blob = new Blob([csvContent], { type: 'text/csv' });
+          const url = URL.createObjectURL(blob);
+          window.open(url);
+        } else if (format === 'pdf') {
+          const { jsPDF } = window.jspdf;
+          const doc = new jsPDF();
+          rows.forEach((r, i) => doc.text(r.join("  |  "), 10, 10 + i * 10));
+          doc.save('reorder_list.pdf');
+        } else if (format === 'email') {
+          const body = rows.map(r => r.join("\t")).join("\r\n");
+          window.location.href = `mailto:?subject=Reorder List CSV&body=${encodeURIComponent(body)}`;
+        }
+        this.value = '';
+      });
+
+      document.getElementById('usbScanBtn').addEventListener('click', function () {
+        alert("USB scanner ready. Focus on the barcode input field and scan.");
+      });
+
+      document.getElementById('cameraScanBtn').addEventListener('click', function () {
+        const scannerContainer = document.createElement('div');
+        scannerContainer.id = 'scanner';
+        document.body.appendChild(scannerContainer);
+
+        const html5QrCode = new Html5Qrcode("scanner");
+        html5QrCode.start(
+          { facingMode: "environment" },
+          { fps: 10, qrbox: { width: 250, height: 250 } },
+          (decodedText) => {
+            html5QrCode.stop().then(() => {
+              document.body.removeChild(scannerContainer);
+              incrementOrAddTool(decodedText);
+            });
+          },
+          (errorMessage) => {
+            console.warn(`QR Code no match: ${errorMessage}`);
+          }
+        ).catch(err => {
+          console.error(`Unable to start scanning: ${err}`);
+          document.body.removeChild(scannerContainer);
+        });
+      });
+
+      updateTable();
+    });
+  </script>
+</body>
+</html>
